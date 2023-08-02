@@ -1,54 +1,44 @@
 import pandas as pd
 import numpy as np
-import random
 
-# Read data from CSV file
-df = pd.read_csv('timestamps.csv')
+# read your csv file into a DataFrame
+df = pd.read_csv('your_file.csv', parse_dates=['timestamp'])
 
-# Convert timestamps to datetime and extract the time
-df['timestamp'] = pd.to_datetime(df['timestamp'])
-df['time'] = df['timestamp'].dt.time
+# create a 'time' column representing minutes since the start of the day
+df['time'] = df['timestamp'].dt.hour * 60 + df['timestamp'].dt.minute
 
-# Define the time intervals
-intervals = pd.date_range(start='00:00', end='23:59', freq='30min').time
+# define the intervals (48 half-hourly intervals in a day)
+intervals = pd.interval_range(start=0, end=24*60, freq=30)
 
-# Count the occurrences in each interval
-df['interval'] = pd.cut(df['time'], bins=intervals, include_lowest=True)
-counts = df['interval'].value_counts()
+# cut 'time' column into half-hourly intervals
+df['interval'] = pd.cut(df['time'], bins=[interval.left for interval in intervals] + [intervals[-1].right])
 
-# Calculate probabilities for each interval
-probs = counts / counts.sum()
+# count the occurrences in each interval
+counts = df['interval'].value_counts(sort=False)
 
-# Calculate the expected number of timestamps in each interval for a total of 50 timestamps
-expected_counts = (probs * 50).round().astype(int)
+# calculate the probabilities
+probabilities = counts / counts.sum()
 
-# Generate the new timestamps
-new_timestamps = []
+# create a function to generate timestamps for a day
+def generate_timestamps(n):
+    # draw n intervals according to the probabilities
+    drawn_intervals = np.random.choice(probabilities.index, size=n, p=probabilities.values)
 
-for interval, count in expected_counts.items():
-    # Calculate the start and end of the interval
-    start = interval.left
-    end = interval.right
-    
-    # Calculate the difference between the end and start times in minutes
-    diff = ((end.hour * 60 + end.minute) - (start.hour * 60 + start.minute))
-    
-    # If diff is zero, that means we are at the end of the time frame i.e. 00:00, so set diff to 24*60 minutes
-    if diff == 0:
-        diff = 24*60
+    # for each drawn interval, generate evenly spaced timestamps within that interval
+    timestamps = []
+    for interval in drawn_intervals:
+        interval_length = interval.right - interval.left
+        timestamps_per_interval = np.random.randint(1, 5) # you can adjust this as needed
+        step = interval_length / timestamps_per_interval
+        for i in range(timestamps_per_interval):
+            minute = int(interval.left + i * step)
+            hour, minute = divmod(minute, 60)
+            timestamps.append(pd.Timestamp(year=2023, month=8, day=1, hour=hour, minute=minute))
 
-    # Calculate the spacing between each timestamp
-    if count > 0:
-        spacing = diff / count
-    else:
-        continue
+    return timestamps
 
-    # Generate the timestamps
-    for i in range(count):
-        minute = start.hour * 60 + start.minute + i*spacing
-        hour = minute // 60
-        minute = minute % 60
-        new_timestamps.append(pd.Timestamp(year=2023, month=8, day=2, hour=int(hour), minute=int(minute)))
+# generate 50 timestamps
+timestamps = generate_timestamps(50)
 
-new_timestamps
-
+# sort the timestamps
+timestamps.sort()
