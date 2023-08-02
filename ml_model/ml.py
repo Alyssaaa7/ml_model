@@ -18,6 +18,7 @@ counts = df['interval'].value_counts(sort=False)
 # calculate the probabilities
 probabilities = counts / counts.sum()
 
+# the total number of timestamps to generate
 N = 50
 
 # calculate the expected number of timestamps in each interval
