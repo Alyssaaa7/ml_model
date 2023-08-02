@@ -1,60 +1,61 @@
 import pandas as pd
-import numpy as np
-from sklearn.preprocessing import MinMaxScaler
+
+# Load your data
+df = pd.read_excel('your_data.xlsx')
+
+# Convert your timestamps to datetime format and set it as index
+df['timestamp'] = pd.to_datetime(df['timestamp'])
+df.set_index('timestamp', inplace=True)
+
+# Resample your data to the minute level
+df_resampled = df.resample('T').count() 
+
+# Convert to binary representation (1 if there was a timestamp in a given minute, 0 otherwise)
+df_resampled = (df_resampled > 0).astype(int)
+
+# Flatten the series into a single column dataframe
+df_resampled = df_resampled.reset_index().melt('timestamp', var_name='a', value_name='presence')
+df_resampled.drop('a', axis=1, inplace=True)
+
+
+
+def generate_sequences(data, sequence_length):
+    x = []
+    y = []
+    for i in range(len(data) - sequence_length):
+        x.append(data[i : i + sequence_length])
+        y.append(data[i + sequence_length])
+    return np.array(x), np.array(y)
+
+
+from sklearn.model_selection import train_test_split
+
+sequence_length = 60  # sequence length could be any number depending on how far back you think is relevant for your prediction.
+# For instance, if you think the past 60 minutes are relevant for the prediction, sequence_length should be 60
+
+X, y = generate_sequences(df_resampled['presence'].values, sequence_length)
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Reshape input to fit LSTM layer
+X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
+X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], 1)
+
 from keras.models import Sequential
 from keras.layers import LSTM, Dense
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-import tensorflow as tf
 
-# Load the dataset
-df = pd.read_excel('your_dataset.xlsx')
-
-# Convert timestamp to datetime
-df['timestamp'] = pd.to_datetime(df['timestamp'])
-
-# Calculate time difference between current row and previous row in hours
-df['diff'] = df['timestamp'].diff().dt.total_seconds() / 3600  # converting seconds to hours
-df = df.dropna()  # drop the first row which has a NaN diff value
-
-# Define number of past steps to consider and number of future steps (hours) to predict
-n_steps_past = 72
-n_steps_future = 24
-n_features = 1
-
-# Normalize the 'diff' column
-scaler = MinMaxScaler(feature_range=(0, 1))
-df['diff'] = scaler.fit_transform(df['diff'].values.reshape(-1, 1))
-
-# Prepare the dataset
-X, y = [], []
-for i in range(n_steps_past, len(df) - n_steps_future):
-    X.append(df['diff'].iloc[i - n_steps_past:i].values)
-    y.append(df['diff'].iloc[i:i + n_steps_future].values)
-
-X = np.array(X).reshape(-1, n_steps_past, n_features)
-y = np.array(y)
-
-# Define LSTM model
 model = Sequential()
-model.add(LSTM(50, activation='relu', input_shape=(n_steps_past, n_features)))
-model.add(Dense(n_steps_future))
+model.add(LSTM(50, activation='relu', input_shape=(sequence_length, 1)))
+model.add(Dense(1, activation='sigmoid'))  # sigmoid activation function for binary classification
 
-# Compile the model
-model.compile(optimizer='adam', loss='mse')
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
 
-# Train the model
-model.fit(X, y, epochs=50, verbose=1)
+model.fit(X_train, y_train, epochs=5, verbose=1)
+# Note that the model is predicting probabilities.
+# To make a binary prediction, you must choose a threshold (like 0.5) to convert these probabilities to 0s and 1s.
+y_pred = model.predict(X_test)
+y_pred_binary = np.where(y_pred >= 0.5, 1, 0)
 
-# Predict future timestamps
-X_new = df['diff'].to_numpy()[-n_steps_past:]  
-X_new = X_new.reshape((1, n_steps_past, n_features))
+# Now y_pred_binary contains the binary predictions of your model for the test data
 
-predicted_diffs = model.predict(X_new)[0]
-predicted_diffs = scaler.inverse_transform(predicted_diffs.reshape(-1, 1))  # inverse transform to the original scale
-
-# Create future timestamps
-last_timestamp = df['timestamp'].iloc[-1]
-predicted_timestamps = [last_timestamp + pd.to_timedelta(predicted_diffs[i][0], unit='h') for i in range(n_steps_future)]
-
-print(predicted_timestamps)
 
