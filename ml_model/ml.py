@@ -1,61 +1,37 @@
 import pandas as pd
+import numpy as np
 
-# Load your data
-df = pd.read_excel('your_data.xlsx')
+# read your csv file into a DataFrame
+df = pd.read_csv('your_file.csv')
 
-# Convert your timestamps to datetime format and set it as index
+# make sure 'timestamp' column is in datetime format
 df['timestamp'] = pd.to_datetime(df['timestamp'])
-df.set_index('timestamp', inplace=True)
 
-# Resample your data to the minute level
-df_resampled = df.resample('T').count() 
+# extract weekday name, hour and minute, then create a new column for 30-minute interval 
+df['weekday'] = df['timestamp'].dt.day_name()
+df['hour'] = df['timestamp'].dt.hour
+df['minute'] = df['timestamp'].dt.minute
+df['time_interval'] = df['hour'] + np.where(df['minute'] >= 30, 0.5, 0)
 
-# Convert to binary representation (1 if there was a timestamp in a given minute, 0 otherwise)
-df_resampled = (df_resampled > 0).astype(int)
+# count occurrences for each weekday and time_interval
+count_df = df.groupby(['weekday', 'time_interval']).size().reset_index(name='counts')
 
-# Flatten the series into a single column dataframe
-df_resampled = df_resampled.reset_index().melt('timestamp', var_name='a', value_name='presence')
-df_resampled.drop('a', axis=1, inplace=True)
+# calculate total counts for each weekday
+total_counts = count_df.groupby('weekday')['counts'].sum().reset_index(name='total_counts')
 
+# merge total counts back to the count_df
+count_df = pd.merge(count_df, total_counts, on='weekday')
 
+# calculate probability
+count_df['probability'] = count_df['counts'] / count_df['total_counts']
 
-def generate_sequences(data, sequence_length):
-    x = []
-    y = []
-    for i in range(len(data) - sequence_length):
-        x.append(data[i : i + sequence_length])
-        y.append(data[i + sequence_length])
-    return np.array(x), np.array(y)
+# simulate for a specific day
+def simulate_day(day_name):
+    specific_day_df = count_df[count_df['weekday'] == day_name]
+    return np.random.choice(specific_day_df['time_interval'], size=50, p=specific_day_df['probability'])
 
+# simulate for a weekday
+print(simulate_day('Monday'))
 
-from sklearn.model_selection import train_test_split
-
-sequence_length = 60  # sequence length could be any number depending on how far back you think is relevant for your prediction.
-# For instance, if you think the past 60 minutes are relevant for the prediction, sequence_length should be 60
-
-X, y = generate_sequences(df_resampled['presence'].values, sequence_length)
-
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-# Reshape input to fit LSTM layer
-X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
-X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], 1)
-
-from keras.models import Sequential
-from keras.layers import LSTM, Dense
-
-model = Sequential()
-model.add(LSTM(50, activation='relu', input_shape=(sequence_length, 1)))
-model.add(Dense(1, activation='sigmoid'))  # sigmoid activation function for binary classification
-
-model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-
-model.fit(X_train, y_train, epochs=5, verbose=1)
-# Note that the model is predicting probabilities.
-# To make a binary prediction, you must choose a threshold (like 0.5) to convert these probabilities to 0s and 1s.
-y_pred = model.predict(X_test)
-y_pred_binary = np.where(y_pred >= 0.5, 1, 0)
-
-# Now y_pred_binary contains the binary predictions of your model for the test data
-
-
+# simulate for a weekend
+print(simulate_day('Saturday'))
