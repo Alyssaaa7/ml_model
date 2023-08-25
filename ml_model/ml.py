@@ -1,54 +1,94 @@
 import pandas as pd
 import numpy as np
+from pmdarima import auto_arima
+from datetime import datetime
 
-# read your csv file into a DataFrame
-df = pd.read_csv('your_file.csv', parse_dates=['timestamp'])
-
-# create a 'time' column representing minutes since the start of the day
-df['time'] = df['timestamp'].dt.hour * 60 + df['timestamp'].dt.minute
-
-intervals = [pd.Interval(i, i + 30) for i in range(0, 24*60, 30)]
-
-# cut 'time' column into half-hourly intervals
-df['interval'] = pd.cut(df['time'], bins=[interval.left for interval in intervals] + [intervals[-1].right])
-
-# count the occurrences in each interval
-counts = df['interval'].value_counts(sort=False)
-
-# calculate the probabilities
-probabilities = counts / counts.sum()
-
-# the total number of timestamps to generate
-N = 50
-
-# calculate the expected number of timestamps in each interval
-expected_counts = (probabilities * N).round().astype(int)
-
-# calculate the total number of generated timestamps
-total_generated = expected_counts.sum()
-
-# if the total number is not equal to N, adjust the counts proportionally
-if total_generated != N:
-    adjustment_factor = N / total_generated
-    expected_counts = (expected_counts * adjustment_factor).round().astype(int)
-
-# create a function to generate evenly spaced timestamps within an interval
-def generate_timestamps_in_interval(interval, n):
-    interval_length = interval.right - interval.left
-    step = interval_length / max(n, 1)
+def generate_timestamps_in_interval(interval, n, date):
+    year = date.year
+    month = date.month
+    day = date.day
     timestamps = []
-    for i in range(n):
-        minute = int(interval.left + i * step)
+    for _ in range(n):
+        minute = np.random.randint(interval.left, interval.right)
         hour, minute = divmod(minute, 60)
-        timestamps.append(pd.Timestamp(year=2023, month=8, day=1, hour=hour, minute=minute))
+        timestamps.append(datetime(year, month, day, hour, minute))
     return timestamps
 
-# generate the timestamps
-timestamps = []
-for interval, count in expected_counts.items():
-    timestamps.extend(generate_timestamps_in_interval(interval, count))
+def generate_weights(df):
+    """Generate weights for the dataframe based on the 'date' column.
+    
+    Past 7 days have a weight of 2, and others have a weight of 1.
+    Adjust as needed.
+    
+    Arguments:
+    - df: dataframe with a 'date' column.
+    
+    Returns:
+    - Series of weights corresponding to the dataframe rows.
+    """
+    last_date = df['date'].max()
+    seven_days_ago = last_date - pd.Timedelta(days=7)
+    weights = df['date'].apply(lambda x: 2 if x > seven_days_ago else 1)
+    return weights
 
-# sort the timestamps
-timestamps.sort()
+def get_next_day_frequency(date, df):
+    df['date'] = df['timestamp'].dt.date
+    df['day_of_week'] = df['timestamp'].dt.day_name()
+    weekday_df = df[df['day_of_week'].isin(['Monday','Tuesday','Wednesday','Thursday','Friday'])]
+    weekend_df = df[df['day_of_week'].isin(['Saturday','Sunday'])]
 
-timestamps
+    weekday_freq = weekday_df.groupby('date').size().ewm(alpha=0.3).mean()
+    weekend_freq = weekend_df.groupby('date').size().ewm(alpha=0.3).mean()
+
+    weekday_train = weekday_freq[-30:]
+    weekend_train = weekend_freq[-30:]
+
+    weekday_model = auto_arima(weekday_train)
+    weekend_model = auto_arima(weekend_train)
+    
+    last_day_in_data = df['date'].max()
+    target_date = pd.to_datetime(date).to_pydatetime().date()
+    days_ahead = (target_date - last_day_in_data).days()
+
+    if target_date.weekday() < 5:
+        next_day_pred = weekday_model.predict(n_periods=days_ahead).iloc[-1]
+    else:
+        next_day_pred = weekend_model.predict(n_periods=days_ahead).iloc[-1]
+    return int(next_day_pred.round())
+
+def get_predicted_timestamps(date, sql_result=[]):  # Added sql_result as a default empty list as a parameter
+    df = pd.DataFrame(sql_result, columns=['timestamp'])
+    N = get_next_day_frequency(date, df)
+
+    df['time'] = df['timestamp'].dt.hour * 60 + df['timestamp'].dt.minute
+    intervals = [pd.Interval(i, i + 30) for i in range(0, 24*60, 30)]
+    df['interval'] = pd.cut(df['time'], bins = [interval.left for interval in intervals] + [intervals[-1].right])
+
+    # Apply weights to the counts within intervals
+    weights = generate_weights(df)
+    weighted_counts = df.groupby('interval').apply(lambda x: (x['interval'].value_counts() * weights.loc[x.index]).sum())
+
+    probabilities = weighted_counts / weighted_counts.sum()
+    expected_counts = (probabilities * N).round().astype(int)
+    total_generated = expected_counts.sum()
+
+    if total_generated != N:
+        sorted_interval = probabilities.sort_values(ascending=False).index
+        while total_generated < N:
+            for interval in sorted_interval:
+                if total_generated >= N:
+                    break
+                expected_counts.loc[interval] += 1
+                total_generated += 1
+        while total_generated > N:
+            for interval in sorted_interval:
+                if total_generated <= N or expected_counts.loc[interval] == 0:
+                    break
+                expected_counts.loc[interval] -= 1
+                total_generated -= 1
+
+    timestamps = []
+    for interval, count in expected_counts.items():
+        timestamps.extend(generate_timestamps_in_interval(interval, count, date))
+
+    return timestamps
